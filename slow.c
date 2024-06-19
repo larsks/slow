@@ -1,4 +1,7 @@
+#define _GNU_SOURCE
+
 #include <errno.h>
+#include <poll.h>
 #include <pty.h>
 #include <signal.h>
 #include <stdio.h>
@@ -7,12 +10,17 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "buffer.h"
+#include "must.h"
+
 #define OPTSTRING "b:hs"
 #define OPT_SPEED 'b'
 #define OPT_STATS 's'
 #define OPT_HELP 'h'
+
 #define DEFAULT_SPEED 9600
-#define BUFSIZE 8192
+#define BITS_PER_BYTE 8
+#define NANOSECONDS 1E9
 
 struct {
   int speed;
@@ -63,18 +71,12 @@ int run_child_on_pty(char **argv) {
   pid_t pid;
   int tty;
 
-  if (-1 == (tcgetattr(STDOUT_FILENO, &termp))) {
-    perror("unable to get terminal attributes");
-    exit(1);
-  }
-  if (-1 == (ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp))) {
-    perror("unable to get terminal size");
-    exit(1);
-  }
-  if (-1 == (pid = forkpty(&tty, NULL, &termp, &winp))) {
-    perror("fork");
-    exit(1);
-  }
+  MUST(tcgetattr(STDOUT_FILENO, &termp), "unable to get terminal attributes");
+
+  cfmakeraw(&termp);
+
+  MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp), "unable to get terminal size");
+  MUST(pid = forkpty(&tty, NULL, &termp, &winp), "forkpty");
 
   if (pid == 0) {
     // child
@@ -92,15 +94,21 @@ int run_child_on_pty(char **argv) {
 int main(int argc, char *argv[]) {
   int tty;
   int quit = 0;
-  int chartime;
   int optind;
   time_t t_start, t_stop;
+  struct timespec time_per_character;
   int bytecount = 0;
+
+  int nfds = 2;
+  struct pollfd fds[2];
+  struct buffer bufs[2];
+  struct timespec timeout;
 
   optind = parse_args(argc, argv);
 
-  chartime = (1000000 / options.speed) * 8;
-  if (chartime == 0) {
+  time_per_character.tv_sec = 0;
+  time_per_character.tv_nsec = (NANOSECONDS / options.speed) * BITS_PER_BYTE;
+  if (time_per_character.tv_nsec == 0) {
     // chartime is less than 1us
     fprintf(stderr, "WARNING: cannot limit to %d bps\n", options.speed);
   }
@@ -110,35 +118,52 @@ int main(int argc, char *argv[]) {
   // ignore SIGCHLD
   signal(SIGCHLD, SIG_IGN);
 
+  fds[0].fd = STDIN_FILENO;
+  fds[1].fd = tty;
+  fds[0].events = fds[1].events = POLLIN;
+
+  for (int i = 0; i < 2; i++)
+    buffer_init(&bufs[i]);
+
+  timeout.tv_sec = 0;
+  timeout.tv_nsec = 0;
+
   t_start = time(NULL);
-  while (!quit) {
-    char buf[BUFSIZE];
-    size_t nb;
+  while (1) {
+    int ready;
 
-    nb = read(tty, buf, sizeof(buf));
-    switch (nb) {
-    case -1:
-      if (errno == EIO) {
-        // we expect EIO if the child process exits
-        quit = 1;
-        continue;
-      } else {
-        perror("read");
-        exit(1);
-      }
-      break;
-    case 0:
-      quit = 1;
-      continue;
-      break;
-    default:
-      bytecount += nb;
+    MUST((ready = ppoll(fds, nfds, &timeout, NULL)), "ppoll");
 
-      for (int i = 0; i < nb; i++) {
-        write(STDOUT_FILENO, &buf[i], 1);
-        usleep(chartime);
+    if (ready) {
+      for (int i = 0; i < nfds; i++) {
+        if (fds[i].revents & POLLIN) {
+          int bytesread;
+
+          MUST(
+              (bytesread = read(fds[i].fd, bufs[i].data, sizeof(bufs[i].data))),
+              "read");
+
+          bufs[i].len = bytesread;
+        }
+        if (fds[i].revents & POLLHUP) {
+          close(fds[i].fd);
+          fds[i].fd = -1;
+          quit = 1;
+        }
       }
     }
+
+    // we have data from stdin to write to tty
+    if (!buffer_empty(&bufs[0])) {
+      buffer_write(&bufs[0], tty, 1);
+    }
+
+    // we have data from tty to write to stdout
+    if (!buffer_empty(&bufs[1])) {
+      buffer_write(&bufs[1], STDOUT_FILENO, 1);
+    }
+
+    nanosleep(&time_per_character, NULL);
   }
   t_stop = time(NULL);
 
