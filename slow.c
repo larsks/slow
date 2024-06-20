@@ -226,9 +226,12 @@ int main(int argc, char *argv[]) {
   MUST(tcgetattr(STDOUT_FILENO, &orig_attr),
        "unable to get terminal attributes");
   memcpy(&mod_attr, &orig_attr, sizeof(struct termios));
-  cfmakeraw(&mod_attr);
-  MUST(tcsetattr(STDOUT_FILENO, TCSANOW, &mod_attr),
-       "unable to get terminal attributes");
+
+  if (options.need_tty) {
+    cfmakeraw(&mod_attr);
+    MUST(tcsetattr(STDOUT_FILENO, TCSANOW, &mod_attr),
+         "unable to set terminal attributes");
+  }
 
   pid = run_child_on_pty(&argv[optind], &child_stdin, &child_stdout);
 
