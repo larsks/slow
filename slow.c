@@ -20,10 +20,9 @@
 #define BUFSIZE 1024
 #endif
 
-#define OPTSTRING "b:hsdit"
+#define OPTSTRING "b:hdit"
 #define OPT_DEBUG 'd'
 #define OPT_SPEED 'b'
-#define OPT_STATS 's'
 #define OPT_HELP 'h'
 #define OPT_NEED_STDIN 'i'
 #define OPT_NEED_TTY 't'
@@ -34,11 +33,10 @@
 
 struct {
   int speed;
-  int show_stats;
   int wait_for_debugger;
   int need_stdin;
   int need_tty;
-} options = {DEFAULT_SPEED, 0, 0, 0, 0};
+} options = {DEFAULT_SPEED, 0, 0, 0};
 
 char *progname;
 struct timespec time_per_character;
@@ -67,9 +65,6 @@ int parse_args(int argc, char **argv) {
         fprintf(stderr, "invalid speed: %s\n", optarg);
         exit(1);
       }
-      break;
-    case OPT_STATS:
-      options.show_stats = 1;
       break;
     case OPT_HELP:
       usage(stdout);
@@ -233,11 +228,5 @@ int main(int argc, char *argv[]) {
   signal(SIGCHLD, SIG_IGN);
   signal(SIGPIPE, SIG_IGN);
 
-  t_start = time(NULL);
   loop(child_stdin, child_stdout, pid);
-  t_stop = time(NULL);
-
-  if (options.show_stats) {
-    printf("bytes %d seconds %ld\n", bytecount, t_stop - t_start);
-  }
 }
