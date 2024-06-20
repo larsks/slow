@@ -94,15 +94,13 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
   MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp), "unable to get terminal size");
 
   if (options.need_tty) {
-    // Note that we reverse the indexes in child_in_fds here so that the parent
-    // ends up owning the master device.
     MUST(openpty(&child_in_fds[1], &child_in_fds[0], NULL, NULL, &winp),
          "openpty");
   } else {
     MUST(pipe(child_in_fds), "pipe");
   }
 
-  MUST(openpty(&child_out_fds[0], &child_out_fds[1], NULL, NULL, &winp),
+  MUST(openpty(&child_out_fds[1], &child_out_fds[0], NULL, NULL, &winp),
        "openpty");
 
   MUST((pid = fork()), "fork");
@@ -112,8 +110,8 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
     MUST(ioctl(child_out_fds[1], TIOCSCTTY, 0),
          "failed to set controlling terminal");
     MUST(dup2(child_in_fds[0], STDIN_FILENO), "dup2 (stdin)");
-    MUST(dup2(child_out_fds[1], STDOUT_FILENO), "dup2 (stdout)");
-    MUST(dup2(child_out_fds[1], STDERR_FILENO), "dup2 (stderr)");
+    MUST(dup2(child_out_fds[0], STDOUT_FILENO), "dup2 (stdout)");
+    MUST(dup2(child_out_fds[0], STDERR_FILENO), "dup2 (stderr)");
 
     for (int i = 0; i < 2; i++) {
       MUST(close(child_in_fds[i]), "close (in)");
@@ -125,10 +123,10 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
 
   // parent
   *child_stdin = child_in_fds[1];
-  *child_stdout = child_out_fds[0];
+  *child_stdout = child_out_fds[1];
 
   MUST(close(child_in_fds[0]), "close");
-  MUST(close(child_out_fds[1]), "close");
+  MUST(close(child_out_fds[0]), "close");
 
   return pid;
 }
