@@ -1,22 +1,32 @@
 #define _GNU_SOURCE
 
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <pty.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
 #include <unistd.h>
+#include <utmp.h>
 
 #include "buffer.h"
 #include "must.h"
 
-#define OPTSTRING "b:hs"
+#ifndef BUFSIZE
+#define BUFSIZE 1024
+#endif
+
+#define OPTSTRING "b:hsdit"
+#define OPT_DEBUG 'd'
 #define OPT_SPEED 'b'
 #define OPT_STATS 's'
 #define OPT_HELP 'h'
+#define OPT_NEED_STDIN 'i'
+#define OPT_NEED_TTY 't'
 
 #define DEFAULT_SPEED 9600
 #define BITS_PER_BYTE 8
@@ -25,9 +35,13 @@
 struct {
   int speed;
   int show_stats;
-} options = {DEFAULT_SPEED, 0};
+  int wait_for_debugger;
+  int need_stdin;
+  int need_tty;
+} options = {DEFAULT_SPEED, 0, 0, 0, 0};
 
 char *progname;
+struct timespec time_per_character;
 
 void usage(FILE *out) {
   fprintf(out, "%s: usage: %s [-s] [-b bps] command [args [...]]\n", progname,
@@ -41,6 +55,12 @@ int parse_args(int argc, char **argv) {
 
   while (-1 != (ch = getopt(argc, argv, OPTSTRING))) {
     switch (ch) {
+    case OPT_NEED_STDIN:
+      options.need_stdin = 1;
+      break;
+    case OPT_NEED_TTY:
+      options.need_tty = 1;
+      break;
     case OPT_SPEED:
       options.speed = atoi(optarg);
       if (options.speed == 0) {
@@ -55,6 +75,9 @@ int parse_args(int argc, char **argv) {
       usage(stdout);
       exit(0);
       break;
+    case OPT_DEBUG:
+      options.wait_for_debugger = 1;
+      break;
     default:
       usage(stderr);
       exit(2);
@@ -65,44 +88,130 @@ int parse_args(int argc, char **argv) {
   return optind;
 }
 
-int run_child_on_pty(char **argv) {
+pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
   struct termios termp;
   struct winsize winp;
   pid_t pid;
-  int tty;
+  int child_in_fds[2];
+  int child_out_fds[2];
 
   MUST(tcgetattr(STDOUT_FILENO, &termp), "unable to get terminal attributes");
-
+  MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp), "unable to get terminal size");
   cfmakeraw(&termp);
 
-  MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp), "unable to get terminal size");
-  MUST(pid = forkpty(&tty, NULL, &termp, &winp), "forkpty");
+  if (options.need_tty) {
+    // Note that we reverse the indexes in child_in_fds here so that the parent
+    // ends up owning the master device.
+    MUST(openpty(&child_in_fds[1], &child_in_fds[0], NULL, &termp, &winp),
+         "openpty");
+  } else {
+    MUST(pipe(child_in_fds), "pipe");
+  }
 
+  MUST(openpty(&child_out_fds[0], &child_out_fds[1], NULL, &termp, &winp),
+       "openpty");
+
+  MUST((pid = fork()), "fork");
   if (pid == 0) {
     // child
-    execvp(argv[0], argv);
+    setsid();
+    MUST(ioctl(child_out_fds[1], TIOCSCTTY, 0),
+         "failed to set controlling terminal");
+    MUST(dup2(child_in_fds[0], STDIN_FILENO), "dup2 (stdin)");
+    MUST(dup2(child_out_fds[1], STDOUT_FILENO), "dup2 (stdout)");
+    MUST(dup2(child_out_fds[1], STDERR_FILENO), "dup2 (stderr)");
 
-    // if exec failed...
-    perror("failed to run command");
-    exit(1);
+    for (int i = 0; i < 2; i++) {
+      MUST(close(child_in_fds[i]), "close (in)");
+      MUST(close(child_out_fds[i]), "close (out)");
+    }
+
+    MUST(execvp(argv[0], argv), "failed to run command");
   }
 
   // parent
-  return tty;
+  *child_stdin = child_in_fds[1];
+  *child_stdout = child_out_fds[0];
+
+  MUST(close(child_in_fds[0]), "close");
+  MUST(close(child_out_fds[1]), "close");
+
+  return pid;
+}
+
+void loop(int child_stdin, int child_stdout, pid_t child_pid) {
+  struct timespec timeout;
+  struct pollfd fds[2];
+  struct buffer stdin_buf, stdout_buf;
+  int ready = 0;
+  int draining_stdin = !options.need_stdin;
+  int draining_stdout = 0;
+  int status;
+
+  fds[0].fd = STDIN_FILENO;
+  fds[1].fd = child_stdout;
+  fds[0].events = fds[1].events = POLLIN;
+
+  timeout.tv_sec = 0;
+  timeout.tv_nsec = 0;
+
+  buffer_init(&stdin_buf, BUFSIZE);
+  buffer_init(&stdout_buf, BUFSIZE);
+
+  while (1) {
+    if (!buffer_empty(&stdin_buf)) {
+      buffer_write(&stdin_buf, child_stdin, 1);
+    }
+    if (!buffer_empty(&stdout_buf)) {
+      buffer_write(&stdout_buf, STDOUT_FILENO, 1);
+    }
+
+    if (draining_stdout && buffer_empty(&stdout_buf)) {
+      break;
+    }
+    if (draining_stdin && buffer_empty(&stdin_buf)) {
+      close(child_stdin);
+      draining_stdin = 0;
+    }
+
+    MUST((ready = ppoll(fds, 2, &timeout, NULL)), "ppoll");
+
+    if (ready) {
+      for (int i = 0; i < 2; i++) {
+        if (fds[i].revents & POLLIN) {
+          int nb;
+
+          if (fds[i].fd == STDIN_FILENO) {
+            buffer_read(&stdin_buf, STDIN_FILENO, 0);
+          }
+
+          if (fds[i].fd == child_stdout) {
+            buffer_read(&stdout_buf, child_stdout, 0);
+          }
+        }
+
+        if (fds[i].revents & POLLHUP) {
+          if (fds[i].fd == STDIN_FILENO) {
+            draining_stdin = 1;
+          } else {
+            draining_stdout = 1;
+          }
+          fds[i].fd = -1;
+        }
+      }
+    }
+
+    nanosleep(&time_per_character, NULL);
+  }
 }
 
 int main(int argc, char *argv[]) {
-  int tty;
-  int quit = 0;
   int optind;
   time_t t_start, t_stop;
-  struct timespec time_per_character;
   int bytecount = 0;
 
-  int nfds = 2;
-  struct pollfd fds[2];
-  struct buffer bufs[2];
-  struct timespec timeout;
+  int child_stdin, child_stdout;
+  pid_t pid;
 
   optind = parse_args(argc, argv);
 
@@ -113,58 +222,19 @@ int main(int argc, char *argv[]) {
     fprintf(stderr, "WARNING: cannot limit to %d bps\n", options.speed);
   }
 
-  tty = run_child_on_pty(&argv[optind]);
+  if (options.wait_for_debugger) {
+    fprintf(stderr, "pid: %d\n", getpid());
+    while (options.wait_for_debugger)
+      sleep(1);
+  }
 
-  // ignore SIGCHLD
+  pid = run_child_on_pty(&argv[optind], &child_stdin, &child_stdout);
+
   signal(SIGCHLD, SIG_IGN);
-
-  fds[0].fd = STDIN_FILENO;
-  fds[1].fd = tty;
-  fds[0].events = fds[1].events = POLLIN;
-
-  for (int i = 0; i < 2; i++)
-    buffer_init(&bufs[i]);
-
-  timeout.tv_sec = 0;
-  timeout.tv_nsec = 0;
+  signal(SIGPIPE, SIG_IGN);
 
   t_start = time(NULL);
-  while (1) {
-    int ready;
-
-    MUST((ready = ppoll(fds, nfds, &timeout, NULL)), "ppoll");
-
-    if (ready) {
-      for (int i = 0; i < nfds; i++) {
-        if (fds[i].revents & POLLIN) {
-          int bytesread;
-
-          MUST(
-              (bytesread = read(fds[i].fd, bufs[i].data, sizeof(bufs[i].data))),
-              "read");
-
-          bufs[i].len = bytesread;
-        }
-        if (fds[i].revents & POLLHUP) {
-          close(fds[i].fd);
-          fds[i].fd = -1;
-          quit = 1;
-        }
-      }
-    }
-
-    // we have data from stdin to write to tty
-    if (!buffer_empty(&bufs[0])) {
-      buffer_write(&bufs[0], tty, 1);
-    }
-
-    // we have data from tty to write to stdout
-    if (!buffer_empty(&bufs[1])) {
-      buffer_write(&bufs[1], STDOUT_FILENO, 1);
-    }
-
-    nanosleep(&time_per_character, NULL);
-  }
+  loop(child_stdin, child_stdout, pid);
   t_stop = time(NULL);
 
   if (options.show_stats) {
