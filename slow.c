@@ -131,7 +131,7 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
   return pid;
 }
 
-void loop(int child_stdin, int child_stdout, pid_t child_pid) {
+void loop(int child_stdin, int child_stdout) {
   struct timespec timeout;
   struct pollfd fds[2];
   struct buffer stdin_buf, stdout_buf;
@@ -215,7 +215,7 @@ int main(int argc, char *argv[]) {
   }
 
   if (options.wait_for_debugger) {
-    fprintf(stderr, "pid: %d\n", getpid());
+    fprintf(stderr, "waiting for debugger; pid: %d\n", getpid());
     while (options.wait_for_debugger)
       sleep(1);
   }
@@ -224,10 +224,10 @@ int main(int argc, char *argv[]) {
     configure_terminal();
   }
 
-  pid = run_child_on_pty(&argv[optind], &child_stdin, &child_stdout);
+  run_child_on_pty(&argv[optind], &child_stdin, &child_stdout);
 
   signal(SIGCHLD, SIG_IGN);
   signal(SIGPIPE, SIG_IGN);
 
-  loop(child_stdin, child_stdout, pid);
+  loop(child_stdin, child_stdout);
 }
