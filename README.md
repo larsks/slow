@@ -1,15 +1,23 @@
 # Slow: Experience life at a slower pace
 
-`slow` limits the output rate of a command to a specified bits/second. This is (currently) just an output filter; you can do this:
+`slow` limits the output rate of a command to a specified bits/second.
+
+As an output filter:
 
 ```
-slow cat README.md
+slow -b 1200 date
 ```
 
-But you cannot do this:
+As an input/output filter:
 
 ```
-slow cat < README.md
+echo foo | slow -b 1200 -i sed s/foo/bar/
+```
+
+For running interactive programs:
+
+```
+slow -b 1200 -it bash
 ```
 
 ## License
