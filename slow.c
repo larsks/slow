@@ -97,13 +97,13 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
   if (options.need_tty) {
     // Note that we reverse the indexes in child_in_fds here so that the parent
     // ends up owning the master device.
-    MUST(openpty(&child_in_fds[1], &child_in_fds[0], NULL, &termp, &winp),
+    MUST(openpty(&child_in_fds[1], &child_in_fds[0], NULL, NULL, &winp),
          "openpty");
   } else {
     MUST(pipe(child_in_fds), "pipe");
   }
 
-  MUST(openpty(&child_out_fds[0], &child_out_fds[1], NULL, &termp, &winp),
+  MUST(openpty(&child_out_fds[0], &child_out_fds[1], NULL, NULL, &winp),
        "openpty");
 
   MUST((pid = fork()), "fork");
