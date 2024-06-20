@@ -10,7 +10,7 @@ extern void exit_and_restore(int);
   {                                                                            \
     if (-1 == (x)) {                                                           \
       perror(msg);                                                             \
-      exit_and_restore(1);                                                     \
+      exit(1);                                                                 \
     }                                                                          \
   }
 

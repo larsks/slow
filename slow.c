@@ -199,14 +199,6 @@ void loop(int child_stdin, int child_stdout, pid_t child_pid) {
   }
 }
 
-void exit_and_restore(int status) {
-  if (options.need_tty) {
-    restore_terminal();
-  }
-
-  exit(status);
-}
-
 int main(int argc, char *argv[]) {
   int optind;
   time_t t_start, t_stop;
@@ -240,5 +232,4 @@ int main(int argc, char *argv[]) {
   signal(SIGPIPE, SIG_IGN);
 
   loop(child_stdin, child_stdout, pid);
-  exit_and_restore(0);
 }
