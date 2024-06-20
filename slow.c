@@ -7,6 +7,7 @@
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/wait.h>
 #include <termios.h>
 #include <time.h>
@@ -84,15 +85,12 @@ int parse_args(int argc, char **argv) {
 }
 
 pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
-  struct termios termp;
   struct winsize winp;
   pid_t pid;
   int child_in_fds[2];
   int child_out_fds[2];
 
-  MUST(tcgetattr(STDOUT_FILENO, &termp), "unable to get terminal attributes");
   MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp), "unable to get terminal size");
-  cfmakeraw(&termp);
 
   if (options.need_tty) {
     // Note that we reverse the indexes in child_in_fds here so that the parent
@@ -208,6 +206,8 @@ int main(int argc, char *argv[]) {
   int child_stdin, child_stdout;
   pid_t pid;
 
+  struct termios orig_attr, mod_attr;
+
   optind = parse_args(argc, argv);
 
   time_per_character.tv_sec = 0;
@@ -223,10 +223,20 @@ int main(int argc, char *argv[]) {
       sleep(1);
   }
 
+  MUST(tcgetattr(STDOUT_FILENO, &orig_attr),
+       "unable to get terminal attributes");
+  memcpy(&mod_attr, &orig_attr, sizeof(struct termios));
+  cfmakeraw(&mod_attr);
+  MUST(tcsetattr(STDOUT_FILENO, TCSANOW, &mod_attr),
+       "unable to get terminal attributes");
+
   pid = run_child_on_pty(&argv[optind], &child_stdin, &child_stdout);
 
   signal(SIGCHLD, SIG_IGN);
   signal(SIGPIPE, SIG_IGN);
 
   loop(child_stdin, child_stdout, pid);
+
+  MUST(tcsetattr(STDOUT_FILENO, TCSANOW, &orig_attr),
+       "unable to get terminal attributes");
 }
