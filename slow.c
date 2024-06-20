@@ -41,6 +41,8 @@ struct {
 
 char *progname;
 struct timespec time_per_character;
+struct termios orig_attr;
+int orig_attr_valid = 0;
 
 void usage(FILE *out) {
   fprintf(out, "%s: usage: %s [-s] [-b bps] command [args [...]]\n", progname,
@@ -198,6 +200,15 @@ void loop(int child_stdin, int child_stdout, pid_t child_pid) {
   }
 }
 
+void exit_and_restore(int status) {
+  if (options.need_tty) {
+    MUST(tcsetattr(STDOUT_FILENO, TCSANOW, &orig_attr),
+         "unable to set terminal attributes");
+  }
+
+  exit(status);
+}
+
 int main(int argc, char *argv[]) {
   int optind;
   time_t t_start, t_stop;
@@ -205,8 +216,6 @@ int main(int argc, char *argv[]) {
 
   int child_stdin, child_stdout;
   pid_t pid;
-
-  struct termios orig_attr, mod_attr;
 
   optind = parse_args(argc, argv);
 
@@ -223,11 +232,13 @@ int main(int argc, char *argv[]) {
       sleep(1);
   }
 
-  MUST(tcgetattr(STDOUT_FILENO, &orig_attr),
-       "unable to get terminal attributes");
-  memcpy(&mod_attr, &orig_attr, sizeof(struct termios));
-
   if (options.need_tty) {
+    struct termios mod_attr;
+
+    MUST(tcgetattr(STDOUT_FILENO, &orig_attr),
+         "unable to get terminal attributes");
+    orig_attr_valid = 1;
+    memcpy(&mod_attr, &orig_attr, sizeof(struct termios));
     cfmakeraw(&mod_attr);
     MUST(tcsetattr(STDOUT_FILENO, TCSANOW, &mod_attr),
          "unable to set terminal attributes");
@@ -239,7 +250,5 @@ int main(int argc, char *argv[]) {
   signal(SIGPIPE, SIG_IGN);
 
   loop(child_stdin, child_stdout, pid);
-
-  MUST(tcsetattr(STDOUT_FILENO, TCSANOW, &orig_attr),
-       "unable to get terminal attributes");
+  exit_and_restore(0);
 }
