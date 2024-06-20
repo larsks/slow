@@ -3,7 +3,11 @@ bindir = $(prefix)/bin
 
 INSTALL = install
 OBJS = slow.o buffer.o term.o
+DEPS = $(OBJS:.o=.d)
 CFLAGS = -g
+
+%.d: %.c
+	$(CC) -MM -o $@ $<
 
 all: slow
 
@@ -18,4 +22,6 @@ install: all
 	$(INSTALL) -m 755 slow $(DESTDIR)$(bindir)
 	
 clean:
-	rm -f slow test_buffer *.o
+	rm -f slow test_buffer *.o *.d
+
+include $(DEPS)
