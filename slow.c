@@ -1,6 +1,5 @@
 #define _GNU_SOURCE
 
-#include <errno.h>
 #include <fcntl.h>
 #include <poll.h>
 #include <pty.h>
@@ -23,7 +22,6 @@
 #endif
 
 #define OPTSTRING "b:hdit"
-#define OPT_DEBUG 'd'
 #define OPT_SPEED 'b'
 #define OPT_HELP 'h'
 #define OPT_NEED_STDIN 'i'
@@ -72,9 +70,6 @@ int parse_args(int argc, char **argv) {
       usage(stdout);
       exit(0);
       break;
-    case OPT_DEBUG:
-      options.wait_for_debugger = 1;
-      break;
     default:
       usage(stderr);
       exit(2);
@@ -119,6 +114,9 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
     MUST(dup2(child_in_fds[0], STDIN_FILENO), "dup2 (stdin)");
     MUST(dup2(child_out_fds[0], STDOUT_FILENO), "dup2 (stdout)");
     MUST(dup2(child_out_fds[0], STDERR_FILENO), "dup2 (stderr)");
+
+    if (!options.need_stdin)
+      MUST(close(STDIN_FILENO), "close (stdin)");
 
     for (int i = 0; i < 2; i++) {
       MUST(close(child_out_fds[i]), "close (out)");
@@ -213,7 +211,6 @@ void loop(int child_stdin, int child_stdout) {
 int main(int argc, char *argv[]) {
   int optind;
   time_t t_start, t_stop;
-  int bytecount = 0;
 
   int child_stdin, child_stdout;
   pid_t pid;
@@ -229,12 +226,6 @@ int main(int argc, char *argv[]) {
   if (time_per_character.tv_nsec == 0) {
     // chartime is less than 1us
     fprintf(stderr, "WARNING: cannot limit to %d bps\n", options.speed);
-  }
-
-  if (options.wait_for_debugger) {
-    fprintf(stderr, "waiting for debugger; pid: %d\n", getpid());
-    while (options.wait_for_debugger)
-      sleep(1);
   }
 
   if (options.need_tty) {
