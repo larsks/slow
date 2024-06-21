@@ -94,48 +94,52 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
 
   MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp), "unable to get terminal size");
 
-  if (options.need_tty) {
-    MUST(openpty(&child_in_fds[1], &child_in_fds[0], NULL, NULL, &winp),
-         "openpty");
-  } else {
-    MUST(pipe(child_in_fds), "pipe");
-  }
-
   MUST(openpty(&child_out_fds[1], &child_out_fds[0], NULL, NULL, &winp),
        "openpty");
+
+  if (options.need_stdin) {
+    if (options.need_tty) {
+      // if we have -it, then we want the same pty for stdin and stdout.
+      // otherwise, running an interactive shell (e.g. bash) will have
+      // problems with job control or signal handling.
+      child_in_fds[0] = child_out_fds[0];
+      child_in_fds[1] = child_out_fds[1];
+    } else {
+      MUST(pipe(child_in_fds), "pipe");
+    }
+  }
 
   MUST((pid = fork()), "fork");
   if (pid == 0) {
     // child
     setsid();
 
-    // If we set the stdin pty as the controlling terminal, then
-    // signals are sent correctly (like ^C, ^Z, etc)...but we lose
-    // job control because stdout is not the controlling terminal.
-    if (options.need_tty)
-      ctty = child_in_fds[1];
-    else
-      ctty = child_out_fds[1];
-
-    MUST(ioctl(ctty, TIOCSCTTY, 0), "failed to set controlling terminal");
+    MUST(ioctl(child_out_fds[0], TIOCSCTTY, 0),
+         "failed to set controlling terminal");
     MUST(dup2(child_in_fds[0], STDIN_FILENO), "dup2 (stdin)");
     MUST(dup2(child_out_fds[0], STDOUT_FILENO), "dup2 (stdout)");
     MUST(dup2(child_out_fds[0], STDERR_FILENO), "dup2 (stderr)");
 
     for (int i = 0; i < 2; i++) {
-      MUST(close(child_in_fds[i]), "close (in)");
       MUST(close(child_out_fds[i]), "close (out)");
+      if (options.need_stdin && !options.need_tty)
+        MUST(close(child_in_fds[i]), "close (in)");
     }
 
     MUST(execvp(argv[0], argv), "failed to run command");
   }
 
   // parent
-  *child_stdin = child_in_fds[1];
   *child_stdout = child_out_fds[1];
+  MUST(close(child_out_fds[0]), "close (child stdout)");
 
-  MUST(close(child_in_fds[0]), "close");
-  MUST(close(child_out_fds[0]), "close");
+  if (options.need_stdin) {
+    *child_stdin = child_in_fds[1];
+    if (!options.need_tty)
+      MUST(close(child_in_fds[0]), "close (child stdin)");
+  } else {
+    *child_stdin = -1;
+  }
 
   return pid;
 }
@@ -149,7 +153,7 @@ void loop(int child_stdin, int child_stdout) {
   int draining_stdout = 0;
   int status;
 
-  fds[0].fd = STDIN_FILENO;
+  fds[0].fd = options.need_stdin ? STDIN_FILENO : -1;
   fds[1].fd = child_stdout;
   fds[0].events = fds[1].events = POLLIN;
 
