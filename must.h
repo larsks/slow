@@ -4,8 +4,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-extern void exit_and_restore(int);
-
 #define MUST(x, msg)                                                           \
   {                                                                            \
     if (-1 == (x)) {                                                           \
