@@ -44,7 +44,7 @@ char *progname;
 struct timespec time_per_character;
 
 void usage(FILE *out) {
-  fprintf(out, "%s: usage: %s [-s] [-b bps] command [args [...]]\n", progname,
+  fprintf(out, "%s: usage: %s [-it] [-b bps] command [args [...]]\n", progname,
           progname);
 }
 
@@ -219,6 +219,10 @@ int main(int argc, char *argv[]) {
   pid_t pid;
 
   optind = parse_args(argc, argv);
+  if (argc - optind < 1) {
+    usage(stderr);
+    exit(2);
+  }
 
   time_per_character.tv_sec = 0;
   time_per_character.tv_nsec = (NANOSECONDS / options.speed) * BITS_PER_BYTE;
