@@ -90,6 +90,7 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
   pid_t pid;
   int child_in_fds[2];
   int child_out_fds[2];
+  int ctty;
 
   MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp), "unable to get terminal size");
 
@@ -107,8 +108,16 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
   if (pid == 0) {
     // child
     setsid();
-    MUST(ioctl(child_out_fds[1], TIOCSCTTY, 0),
-         "failed to set controlling terminal");
+
+    // If we set the stdin pty as the controlling terminal, then
+    // signals are sent correctly (like ^C, ^Z, etc)...but we lose
+    // job control because stdout is not the controlling terminal.
+    if (options.need_tty)
+      ctty = child_in_fds[1];
+    else
+      ctty = child_out_fds[1];
+
+    MUST(ioctl(ctty, TIOCSCTTY, 0), "failed to set controlling terminal");
     MUST(dup2(child_in_fds[0], STDIN_FILENO), "dup2 (stdin)");
     MUST(dup2(child_out_fds[0], STDOUT_FILENO), "dup2 (stdout)");
     MUST(dup2(child_out_fds[0], STDERR_FILENO), "dup2 (stderr)");
