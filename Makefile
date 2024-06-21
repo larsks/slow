@@ -2,7 +2,7 @@ prefix = /usr/local
 bindir = $(prefix)/bin
 
 INSTALL = install
-OBJS = slow.o buffer.o term.o
+OBJS = slow.o buffer.o term.o must.o
 DEPS = $(OBJS:.o=.d)
 CFLAGS = -g
 
