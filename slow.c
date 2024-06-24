@@ -234,6 +234,7 @@ int main(int argc, char *argv[]) {
 
   int child_stdin, child_stdout;
   pid_t pid;
+  int status;
 
   optind = parse_args(argc, argv);
   if (argc - optind < 1) {
@@ -252,10 +253,15 @@ int main(int argc, char *argv[]) {
     configure_terminal();
   }
 
-  run_child(&argv[optind], &child_stdin, &child_stdout);
+  pid = run_child(&argv[optind], &child_stdin, &child_stdout);
 
-  signal(SIGCHLD, SIG_IGN);
   signal(SIGPIPE, SIG_IGN);
 
   loop(child_stdin, child_stdout);
+
+  MUST(waitpid(pid, &status, 0), "waiting for child to exit");
+  if (WIFEXITED(status))
+    return WEXITSTATUS(status);
+  else
+    return 128 + WTERMSIG(status);
 }
