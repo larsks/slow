@@ -196,7 +196,11 @@ void loop(int child_stdin, int child_stdout) {
           int nb;
 
           if (fds[i].fd == STDIN_FILENO) {
-            buffer_read(&stdin_buf, STDIN_FILENO, 0);
+            if (buffer_read(&stdin_buf, STDIN_FILENO, 0) == 0) {
+              // stdin has closed
+              fds[i].fd = -1;
+              draining_stdin = 1;
+            }
           }
 
           if (fds[i].fd == child_stdout) {
