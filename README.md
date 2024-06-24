@@ -1,24 +1,41 @@
-# Slow: Experience life at a slower pace
+# Slow: Live life in the slow lane
 
-`slow` limits the output rate of a command to a specified bits/second.
+`slow` limits the output rate of a command to a specified bits/second. It can
+be used as a simple filter for stdout/stdin, but it can also be used to wrap
+interactive tools.
 
-As an output filter:
+## Why?
+
+I acquired a VT220 terminal (max speed: 19200 bps) and wanted it to display
+some dynamic information (scrolling banners, graphs, etc). I wasn't always near
+the terminal, and I wanted a way to verify that the things I was trying to do
+weren't going to fall over at slower character rates.
+
+## As a simple filter
+
+Slow can be used as a simple filter for stdout:
 
 ```
 slow -b 1200 date
 ```
 
-As an input/output filter:
+Or for stdout + stdin:
 
 ```
 echo foo | slow -b 1200 -i sed s/foo/bar/
 ```
 
-For running interactive programs:
+## Wrapping interactive programs
+
+Slow is even more fun when you use it to wrap an interactive program like a shell:
 
 ```
 slow -b 1200 -it bash
 ```
+
+## Demo
+
+![slow compile running at 300bps](img/slow-build.gif)
 
 ## License
 
