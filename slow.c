@@ -33,10 +33,9 @@
 
 struct {
   int speed;
-  int wait_for_debugger;
   int need_stdin;
   int need_tty;
-} options = {DEFAULT_SPEED, 0, 0, 0};
+} options = {DEFAULT_SPEED, 0, 0};
 
 char *progname;
 struct timespec time_per_character;
@@ -80,25 +79,29 @@ int parse_args(int argc, char **argv) {
   return optind;
 }
 
-pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
-  struct winsize winp;
+pid_t run_child(char **argv, int *child_stdin, int *child_stdout) {
   pid_t pid;
   int child_in_fds[2];
   int child_out_fds[2];
-  int ctty;
 
-  MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp), "unable to get terminal size");
+  if (options.need_tty) {
+    struct winsize winp;
 
-  MUST(openpty(&child_out_fds[1], &child_out_fds[0], NULL, NULL, &winp),
-       "openpty");
+    MUST(ioctl(STDOUT_FILENO, TIOCGWINSZ, &winp),
+         "unable to get terminal size");
+    MUST(openpty(&child_out_fds[0], &child_out_fds[1], NULL, NULL, &winp),
+         "openpty");
+  } else {
+    MUST(pipe(child_out_fds), "pipe");
+  }
 
   if (options.need_stdin) {
     if (options.need_tty) {
       // if we have -it, then we want the same pty for stdin and stdout.
       // otherwise, running an interactive shell (e.g. bash) will have
       // problems with job control or signal handling.
-      child_in_fds[0] = child_out_fds[0];
-      child_in_fds[1] = child_out_fds[1];
+      child_in_fds[0] = child_out_fds[1];
+      child_in_fds[1] = child_out_fds[0];
     } else {
       MUST(pipe(child_in_fds), "pipe");
     }
@@ -107,16 +110,21 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
   MUST((pid = fork()), "fork");
   if (pid == 0) {
     // child
-    setsid();
 
-    MUST(ioctl(child_out_fds[0], TIOCSCTTY, 0),
-         "failed to set controlling terminal");
-    MUST(dup2(child_in_fds[0], STDIN_FILENO), "dup2 (stdin)");
-    MUST(dup2(child_out_fds[0], STDOUT_FILENO), "dup2 (stdout)");
-    MUST(dup2(child_out_fds[0], STDERR_FILENO), "dup2 (stderr)");
+    if (options.need_tty) {
+      setsid();
 
-    if (!options.need_stdin)
+      MUST(ioctl(child_out_fds[1], TIOCSCTTY, 0),
+           "failed to set controlling terminal");
+    }
+
+    if (options.need_stdin)
+      MUST(dup2(child_in_fds[0], STDIN_FILENO), "dup2 (stdin)");
+    else
       MUST(close(STDIN_FILENO), "close (stdin)");
+
+    MUST(dup2(child_out_fds[1], STDOUT_FILENO), "dup2 (stdout)");
+    MUST(dup2(child_out_fds[1], STDERR_FILENO), "dup2 (stderr)");
 
     for (int i = 0; i < 2; i++) {
       MUST(close(child_out_fds[i]), "close (out)");
@@ -128,11 +136,14 @@ pid_t run_child_on_pty(char **argv, int *child_stdin, int *child_stdout) {
   }
 
   // parent
-  *child_stdout = child_out_fds[1];
-  MUST(close(child_out_fds[0]), "close (child stdout)");
+  *child_stdout = child_out_fds[0];
+  MUST(close(child_out_fds[1]), "close (child stdout)");
 
   if (options.need_stdin) {
     *child_stdin = child_in_fds[1];
+
+    // When we're using a tty child_in_fds[0] == child_stdout, so
+    // we don't want to close it.
     if (!options.need_tty)
       MUST(close(child_in_fds[0]), "close (child stdin)");
   } else {
@@ -201,6 +212,11 @@ void loop(int child_stdin, int child_stdout) {
           }
           fds[i].fd = -1;
         }
+
+        if (fds[i].revents & POLLERR) {
+          fprintf(stderr, "Error!\n");
+          exit(1);
+        }
       }
     }
 
@@ -232,7 +248,7 @@ int main(int argc, char *argv[]) {
     configure_terminal();
   }
 
-  run_child_on_pty(&argv[optind], &child_stdin, &child_stdout);
+  run_child(&argv[optind], &child_stdin, &child_stdout);
 
   signal(SIGCHLD, SIG_IGN);
   signal(SIGPIPE, SIG_IGN);
